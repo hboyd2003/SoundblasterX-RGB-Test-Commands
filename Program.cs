@@ -84,8 +84,6 @@ class Program
                     Console.WriteLine("Device path: " + devicePath);
                     Console.ReadKey();
 
-                    devicePath.CopyTo(0, idkBuffer, 0, devicePath.Length);
-
 
                     openDevice(devicePath);
                 }
