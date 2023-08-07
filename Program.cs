@@ -55,10 +55,11 @@ class Program
     static void Main(string[] args)
     {
         Console.ReadKey();
-        //c37acb87-d563-4aa0-b761-996e7864af79
-        //a17579f0-4fec-4936-9364-249460863be5
+        //c37acb87-d563-4aa0-b761-996e7864af79 Interface Class to send the actual commands but can cause bluescreens.
+        //a17579f0-4fec-4936-9364-249460863be5 Another part of the AE-5 that won't crash pc but can be used to confirm if commands are being sent correctly
         Guid deviceInterfaceClassGuid = new Guid("c37acb87-d563-4aa0-b761-996e7864af79");
 
+        //This stuff just gets the device path.
         IntPtr deviceInfoSet = SetupDiGetClassDevs(ref deviceInterfaceClassGuid, IntPtr.Zero, IntPtr.Zero, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
 
         if (deviceInfoSet != IntPtr.Zero)
@@ -83,7 +84,6 @@ class Program
                     Console.WriteLine("Device path: " + devicePath);
                     Console.ReadKey();
 
-                    char[] idkBuffer = new char[16384];
                     devicePath.CopyTo(0, idkBuffer, 0, devicePath.Length);
 
 
@@ -107,13 +107,11 @@ class Program
         if (!deviceHandle.IsInvalid)
         {
             uint bytesReturned = 0x01863230;
-            uint IOCTL_CODE = 0x77772400; // Replace with your IOCTL code
-            uint nInBufferSize = 1044; // Replace with your input buffer size
-            //string path = @"C:\Users\harri\source\repos\SoundblasterX RGB Test Commands\bin\x86\Debug\net6.0\SoundblasterX RGB Test Commands.exe";
-            //byte[] pathBytes = Encoding.Unicode.GetBytes(path);
+            uint IOCTL_CODE = 0x77772400; // Believed to be the set RGB Code
+            uint nInBufferSize = 1044;
 
             byte[] inputBuffer = new byte[1044];
-            byte[] inputData = new byte[] {
+            byte[] inputData = new byte[] { // This should turn off all leds (or at least the onboard ones)
                 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
                 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0xFF,
                 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
@@ -122,9 +120,8 @@ class Program
             Array.Copy(inputData, inputBuffer, inputData.Length);
 
             
-
+            //Creates buffers in a way that the driver can access them.
             byte[] nOutBuffer = new byte[1044];
-
             GCHandle inputHandle = GCHandle.Alloc(inputBuffer, GCHandleType.Pinned);
             IntPtr lpInBuffer = inputHandle.AddrOfPinnedObject();
             Marshal.Copy(inputBuffer, 0, lpInBuffer, inputBuffer.Length);
@@ -133,7 +130,7 @@ class Program
             IntPtr lpOutBuffer = outputHandle.AddrOfPinnedObject();
             Marshal.Copy(lpOutBuffer, nOutBuffer, 0, nOutBuffer.Length);
 
-
+            //Actually sends the command
             bool result = DeviceIoControl(deviceHandle, IOCTL_CODE, lpInBuffer, nInBufferSize, lpOutBuffer, 1044, out bytesReturned, IntPtr.Zero);
 
             if (result)
