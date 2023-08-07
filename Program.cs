@@ -84,7 +84,6 @@ class Program
                     Console.WriteLine("Device path: " + devicePath);
                     Console.ReadKey();
 
-
                     openDevice(devicePath);
                 }
 
@@ -108,14 +107,27 @@ class Program
             uint IOCTL_CODE = 0x77772400; // Believed to be the set RGB Code
             uint nInBufferSize = 1044;
 
-            byte[] inputBuffer = new byte[1044];
-            byte[] inputData = new byte[] { // This should turn off all leds (or at least the onboard ones)
-                0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
-                0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0xFF,
-                0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-            };
+            int numOfLeds = 5;
+            int device = 3; // 2 = External RGB Header, 3 = Internal RGB
 
-            Array.Copy(inputData, inputBuffer, inputData.Length);
+            byte[] header = { // This should turn off all leds (or at least the onboard ones)
+                (byte)device, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, (byte)numOfLeds, 0x00, 0x00, 0x00,
+                0x14, 0x00, 0x00, 0x00
+            };
+            byte[] inputBuffer = new byte[1044];
+            Array.Copy(header, inputBuffer, header.Length);
+
+
+            
+            for (int i = 0; i < 4; i++)
+            {
+                inputBuffer[20 + (4 * i)] = 0x00; //Red
+                inputBuffer[21 + (4 * i)] = 0xFF; //Green
+                inputBuffer[22 + (4 * i)] = 0x00; //Blue
+                inputBuffer[23 + (4 * i)] = 0xFF; //Splitter
+            }
+
+            
 
             
             //Creates buffers in a way that the driver can access them.
