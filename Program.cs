@@ -1,160 +1,108 @@
 ﻿using System;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.WindowsRuntime;
 using Microsoft.Win32.SafeHandles;
-using System.IO;
-using System.Text;
-using System;
-using System.Runtime.InteropServices;
-using Microsoft.Win32.SafeHandles;
-using System.IO;
+using Windows.Devices.Custom;
+using Windows.Devices.Enumeration;
+using Windows.Security.Cryptography;
+using Buffer = Windows.Storage.Streams.Buffer;
+using IOControlCode = Windows.Devices.Custom.IOControlCode;
 
 class Program
 {
-    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    public static extern SafeFileHandle CreateFile(string lpFileName, uint dwDesiredAccess, uint dwShareMode, IntPtr lpSecurityAttributes, uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+    private DeviceWatcher _deviceWatcher;
+    private IOControlCode _controlCode = new(0x7777, 0x100, IOControlAccessMode.ReadWrite, IOControlBufferingMethod.Buffered);
+    private Guid interfaceGUID;
+    private CustomDevice? _device = null;
+    private string? DeviceId;
+    private static ManualResetEvent waitForEnum = new ManualResetEvent(false);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool DeviceIoControl(SafeFileHandle hDevice, uint dwIoControlCode, IntPtr lpInBuffer, uint nInBufferSize, IntPtr lpOutBuffer, uint nOutBufferSize, out uint lpBytesReturned, IntPtr lpOverlapped);
+    public static void Main(string[] args) => new Program().Run();
 
-    [DllImport("setupapi.dll", CharSet = CharSet.Auto)]
-    static extern IntPtr SetupDiGetClassDevs(ref Guid ClassGuid, IntPtr Enumerator, IntPtr hwndParent, uint Flags);
-
-    [DllImport("setupapi.dll", CharSet = CharSet.Auto)]
-    static extern bool SetupDiEnumDeviceInterfaces(IntPtr hDevInfo, IntPtr devInfo, ref Guid interfaceClassGuid, uint memberIndex, ref SP_DEVICE_INTERFACE_DATA deviceInterfaceData);
-
-    [DllImport("setupapi.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    static extern bool SetupDiGetDeviceInterfaceDetail(IntPtr hDevInfo, ref SP_DEVICE_INTERFACE_DATA deviceInterfaceData, IntPtr deviceInterfaceDetailData, uint deviceInterfaceDetailDataSize, ref uint requiredSize, IntPtr deviceInfoData);
-
-    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
-    public static extern int CM_Get_Device_Interface_List_ExW(ref Guid InterfaceClassGuid, IntPtr DeviceId, [Out] char[] Buffer, int BufferLength, int Flags, IntPtr Machine);
-
-    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
-    public static extern int CM_Get_Device_Interface_Property_ExW(string DeviceInterface, ref Guid PropertyKey, IntPtr PropertyType, IntPtr PropertyBuffer, ref int PropertyBufferSize, int Flags, IntPtr Machine);
-
-    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
-    public static extern int CM_Get_Class_Property_ExW(ref Guid ClassGuid, ref Guid PropertyKey, IntPtr PropertyType, IntPtr PropertyBuffer, ref int PropertyBufferSize, int Flags, IntPtr Machine);
-
-    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
-    public static extern int CM_Locate_DevNode_ExW(out int pdnDevInst, string pDeviceID, int ulFlags, IntPtr Machine);
-
-    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
-    public static extern int CM_Get_DevNode_Property_ExW(int dnDevInst, ref Guid PropertyKey, IntPtr PropertyType, IntPtr PropertyBuffer, ref int PropertyBufferSize, int Flags, IntPtr Machine);
-
-    [StructLayout(LayoutKind.Sequential)]
-    struct SP_DEVICE_INTERFACE_DATA
+    private class IOCTLControlCode : IIOControlCode
     {
-        public int cbSize;
-        public Guid interfaceClassGuid;
-        public int flags;
-        private IntPtr reserved;
+        IOControlAccessMode IIOControlCode.AccessMode
+        {
+            get;
+        } = IOControlAccessMode.ReadWrite;
+
+
+        public IOControlBufferingMethod BufferingMethod
+        {
+            get;
+        } = IOControlBufferingMethod.Buffered;
+
+        public uint ControlCode
+        {
+            get;
+        } = 0x77772400;
+
+        public ushort DeviceType
+        {
+            get;
+        } = 0x7777;
+
+        public ushort Function
+        {
+            get;
+        } = 0x100;
     }
 
-    const uint DIGCF_PRESENT = 0x02;
-    const uint DIGCF_DEVICEINTERFACE = 0x10;
-
-    static void Main(string[] args)
+    void Run()
     {
-        Console.ReadKey();
-        //c37acb87-d563-4aa0-b761-996e7864af79 Interface Class to send the actual commands but can cause bluescreens.
-        //a17579f0-4fec-4936-9364-249460863be5 Another part of the AE-5 that won't crash pc but can be used to confirm if commands are being sent correctly
-        Guid deviceInterfaceClassGuid = new Guid("c37acb87-d563-4aa0-b761-996e7864af79");
+        interfaceGUID = new Guid("{c37acb87-d563-4aa0-b761-996e7864af79}");
+        _deviceWatcher = DeviceInformation.CreateWatcher(CustomDevice.GetDeviceSelector(interfaceGUID));
 
-        //This stuff just gets the device path.
-        IntPtr deviceInfoSet = SetupDiGetClassDevs(ref deviceInterfaceClassGuid, IntPtr.Zero, IntPtr.Zero, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+        _deviceWatcher.Added += DeviceAddedEvent;
+        _deviceWatcher.EnumerationCompleted += EnumerationCompleteEvent;
+        _deviceWatcher.Start();
+        waitForEnum.WaitOne();
+        waitForEnum.Reset();
 
-        if (deviceInfoSet != IntPtr.Zero)
+        if (DeviceId == null)
         {
-            SP_DEVICE_INTERFACE_DATA deviceInterfaceData = new SP_DEVICE_INTERFACE_DATA();
-            deviceInterfaceData.cbSize = Marshal.SizeOf(deviceInterfaceData);
-
-            if (SetupDiEnumDeviceInterfaces(deviceInfoSet, IntPtr.Zero, ref deviceInterfaceClassGuid, 0, ref deviceInterfaceData))
-            {
-                uint requiredSize = 0;
-                SetupDiGetDeviceInterfaceDetail(deviceInfoSet, ref deviceInterfaceData, IntPtr.Zero, 0, ref requiredSize, IntPtr.Zero);
-
-                IntPtr detailDataBuffer = Marshal.AllocHGlobal((int)requiredSize);
-
-                Marshal.WriteInt32(detailDataBuffer, (IntPtr.Size == 4) ? (4 + Marshal.SystemDefaultCharSize) : 8);
-
-                if (SetupDiGetDeviceInterfaceDetail(deviceInfoSet, ref deviceInterfaceData, detailDataBuffer, requiredSize, ref requiredSize, IntPtr.Zero))
-                {
-                    IntPtr pDevicePathName = new IntPtr(detailDataBuffer.ToInt64() + 4);
-                    string devicePath = Marshal.PtrToStringAuto(pDevicePathName);
-
-                    Console.WriteLine("Device path: " + devicePath);
-                    Console.ReadKey();
-
-                    openDevice(devicePath);
-                }
-
-                Marshal.FreeHGlobal(detailDataBuffer);
-            }
+            return;
         }
-    }
 
-    static void openDevice(string devicePath)
-    {
-        //string deviceGuid = "{4d36e96c-e325-11ce-bfc1-08002be10318}";
-        //string devicePath = @"\\.\GLOBALROOT\Device\" + deviceGuid;
+        _device = CustomDevice.FromIdAsync(DeviceId, DeviceAccessMode.ReadWrite, DeviceSharingMode.Shared).GetResults();
 
-        SafeFileHandle deviceHandle = CreateFile(devicePath, 0xc0000000, 0x00000003, IntPtr.Zero, 0x00000003, 0, IntPtr.Zero);
-        Console.WriteLine(Marshal.GetLastWin32Error());
-        Console.ReadKey();
-        Console.WriteLine(Marshal.GetLastWin32Error());
-        if (!deviceHandle.IsInvalid)
-        {
-            uint bytesReturned = 0x01863230;
-            uint IOCTL_CODE = 0x77772400; // Believed to be the set RGB Code
-            uint nInBufferSize = 1044;
+        int numOfLeds = 5;
+        int device = 3; // 2 = External RGB Header, 3 = Internal RGB
 
-            int numOfLeds = 5;
-            int device = 3; // 2 = External RGB Header, 3 = Internal RGB
-
-            byte[] header = { // This should turn off all leds (or at least the onboard ones)
+        byte[] header = { // This should turn off all leds (or at least the onboard ones)
                 (byte)device, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, (byte)numOfLeds, 0x00, 0x00, 0x00,
                 0x14, 0x00, 0x00, 0x00
             };
-            byte[] inputBuffer = new byte[1044];
-            Array.Copy(header, inputBuffer, header.Length);
-
-
-            
-            for (int i = 0; i < 4; i++)
-            {
-                inputBuffer[20 + (4 * i)] = 0x00; //Red
-                inputBuffer[21 + (4 * i)] = 0xFF; //Green
-                inputBuffer[22 + (4 * i)] = 0x00; //Blue
-                inputBuffer[23 + (4 * i)] = 0xFF; //Splitter
-            }
-
-            
-
-            
-            //Creates buffers in a way that the driver can access them.
-            byte[] nOutBuffer = new byte[1044];
-            GCHandle inputHandle = GCHandle.Alloc(inputBuffer, GCHandleType.Pinned);
-            IntPtr lpInBuffer = inputHandle.AddrOfPinnedObject();
-            Marshal.Copy(inputBuffer, 0, lpInBuffer, inputBuffer.Length);
-
-            GCHandle outputHandle = GCHandle.Alloc(nOutBuffer, GCHandleType.Pinned);
-            IntPtr lpOutBuffer = outputHandle.AddrOfPinnedObject();
-            Marshal.Copy(lpOutBuffer, nOutBuffer, 0, nOutBuffer.Length);
-
-            //Actually sends the command
-            bool result = DeviceIoControl(deviceHandle, IOCTL_CODE, lpInBuffer, nInBufferSize, lpOutBuffer, 1044, out bytesReturned, IntPtr.Zero);
-
-            if (result)
-            {
-                Console.WriteLine("IOCTL command sent successfully.");
-            }
-            else
-            {
-                Console.WriteLine("Failed to send IOCTL command.");
-            }
-        }
-        else
+        byte[] command = new byte[1044];
+        header.CopyTo(command, 0);
+        for (int i = 0; i < 4; i++)
         {
-            Console.WriteLine("Failed to open device.");
+            command[20 + (4 * i)] = 0xFF; //Red
+            command[21 + (4 * i)] = 0x00; //Green
+            command[22 + (4 * i)] = 0x00; //Blue
+            command[23 + (4 * i)] = 0xFF; //Splitter
         }
+        
+        var inputBuffer = CryptographicBuffer.CreateFromByteArray(command);
+        var outputBuffer = new Buffer(1044);
+        var bufferOtherSide = inputBuffer.ToArray();
+        Console.WriteLine(_controlCode.ControlCode);
+
+        uint success;
+        Console.WriteLine(_device.SendIOControlAsync(new IOCTLControlCode(), inputBuffer, outputBuffer).GetResults());
+    }
+
+
+    void EnumerationCompleteEvent(DeviceWatcher sender, object idk)
+    {
+        waitForEnum.Set();
+    }
+
+
+    // TODO: Proper async for AE5's DeviceAddedEvent
+    void DeviceAddedEvent(DeviceWatcher sender, DeviceInformation deviceInfo)
+    {
+        DeviceId = deviceInfo.Id;
     }
 }
